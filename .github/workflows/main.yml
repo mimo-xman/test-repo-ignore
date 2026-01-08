@@ -1,0 +1,68 @@
+name: Workflow - SAFE
+
+on:
+  workflow_dispatch:
+    inputs:
+      num_keys:
+        description: 'Number of keys to scrape'
+        required: false
+        default: '40'
+      concurrent_workers:
+        description: 'Number of concurrent workers'
+        required: false
+        default: '40'
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    
+    strategy:
+      matrix:
+        instance: [1]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+      
+      - name: Run scraper (Instance ${{ matrix.instance }})
+        env:
+          MONGODB_URL: ${{ secrets.MONGODB_URL }}
+          SCRAPER_NAME: github-action-scraper--instance-${{ matrix.instance }}
+          CONCURRENT_WORKERS: ${{ github.event.inputs.concurrent_workers || '5' }}
+        run: |
+          # Use user input if provided, otherwise default to 50
+          # Add --stop-on-error flag to exit immediately on error
+          python main.pyz ${{ github.event.inputs.num_keys || '50' }} --stop-on-error
+      
+      - name: Upload error screenshots (if any)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-screenshots-instance-${{ matrix.instance }}
+          path: output/error_images/
+          if-no-files-found: ignore
+
+      # TRIGGER NEXT RUN (Self-Healing Loop)
+      # Always run this step to restart the scraping process regardless of success/fail
+      - name: Trigger next workflow run
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Triggering next workflow run..."
+          gh workflow run main.yml --ref main -f num_keys='${{ github.event.inputs.num_keys || '50' }}' -f concurrent_workers='${{ github.event.inputs.concurrent_workers || '5' }}'
